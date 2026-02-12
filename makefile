@@ -23,3 +23,6 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(info $@)
 	mkdir -p $(dir $@)
 	$(CC) $(C_FLAGS) $(INC_FLAGS) -c $< -o $@
+
+run: $(BIN_DIR)/$(APP)
+	./$(BIN_DIR)/$(APP)

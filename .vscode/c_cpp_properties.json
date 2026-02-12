@@ -1,0 +1,18 @@
+{
+  "configurations": [
+    {
+      "name": "Linux",
+      "includePath": [
+        "/usr/include/*",
+        "src/*"
+      ],
+      "defines": [
+        "PLATFORM_WAYLAND"
+      ],
+      "compilerPath": "/usr/bin/clang",
+      "cStandard": "c23",
+      "intelliSenseMode": "linux-clang-x64"
+    }
+  ],
+  "version": 4
+}
