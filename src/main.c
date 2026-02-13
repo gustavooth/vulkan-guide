@@ -8,6 +8,8 @@ typedef struct QueueIndex {
   u32 index;
 } QueueIndex;
 
+const i32 MAX_FRAMES = 3;
+
 typedef struct VkContext {
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
@@ -17,6 +19,9 @@ typedef struct VkContext {
 
   QueueIndex graphics_queue_index;
   VkQueue graphics_queue;
+
+  VkCommandPool command_pool;
+  VkCommandBuffer *command_buffers; // MAX FRAMES
 } VkContext;
 
 VkContext ctx = {0};
@@ -178,7 +183,39 @@ b8 create_logical_device() {
 
   vkGetDeviceQueue(ctx.device, ctx.graphics_queue_index.familyIndex, ctx.graphics_queue_index.index, &ctx.graphics_queue);
 
-  printf("SUCCESS");
+  printf("SUCCESS\n");
+  return true;
+}
+
+b8 allocate_command_buffers() {
+  printf("Creating command pool ... ");
+
+  VkCommandPoolCreateInfo pool_info = {0};
+  pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pool_info.queueFamilyIndex = ctx.graphics_queue_index.familyIndex;
+
+  if(vkCreateCommandPool(ctx.device, &pool_info, NULL, &ctx.command_pool) != VK_SUCCESS) {
+    printf("FAIL 1\n");
+    return false;
+  }
+
+  printf("Allocating command buffers ... ");
+
+  ctx.command_buffers = malloc(sizeof(VkCommandBuffer) * MAX_FRAMES);
+
+  VkCommandBufferAllocateInfo alloc_info = {0};
+  alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc_info.commandPool = ctx.command_pool;
+  alloc_info.commandBufferCount = MAX_FRAMES;
+
+  if(vkAllocateCommandBuffers(ctx.device, &alloc_info, ctx.command_buffers) != VK_SUCCESS) {
+    printf("FAIL 2\n");
+    return false;
+  }
+
+  printf("SUCCESS\n");
   return true;
 }
 
@@ -195,11 +232,21 @@ void vk_init() {
   if(!create_logical_device()) {
     return;
   }
+  if(!allocate_command_buffers()) {
+    return;
+  }
 }
 
 void vk_cleanup() {
   vkDeviceWaitIdle(ctx.device);
+  vkDestroyCommandPool(ctx.device, ctx.command_pool, NULL);
+
   vkDestroyDevice(ctx.device, NULL);
+
+  PFN_vkDestroyDebugUtilsMessengerEXT func =
+        (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(ctx.instance, "vkDestroyDebugUtilsMessengerEXT");
+    func(ctx.instance, ctx.debug_messenger, 0);
+
   vkDestroyInstance(ctx.instance, NULL);
 }
 
