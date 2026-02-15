@@ -1,14 +1,22 @@
-#include "stdio.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifdef PLATFORM_WAYLAND
+  #define VK_USE_PLATFORM_WAYLAND_KHR
+  #include "platform/linux/platform_linux.h"
+#endif
 #include <vulkan/vulkan.h>
 #include "defines.h"
-#include <stdlib.h>
+#include "platform/platform.h"
 
 typedef struct QueueIndex {
   u32 familyIndex;
   u32 index;
 } QueueIndex;
 
-const i32 MAX_FRAMES = 3;
+const u32 MAX_FRAMES = 3;
+const u32 WIDTH = 1280;
+const u32 HEIGHT = 720;
 
 typedef struct VkContext {
   VkInstance instance;
@@ -22,9 +30,15 @@ typedef struct VkContext {
 
   VkCommandPool command_pool;
   VkCommandBuffer *command_buffers; // MAX FRAMES
+
+  VkSurfaceKHR surface;
+  VkSwapchainKHR swapchain;
+  u32 swapchain_image_count;
+  VkImage *swapchain_images;
 } VkContext;
 
 VkContext ctx = {0};
+Window window;
 
 b8 create_instance() {
   printf("Creating instance ... ");
@@ -219,22 +233,120 @@ b8 allocate_command_buffers() {
   return true;
 }
 
-void vk_init() {
+b8 create_surface() {
+#ifdef PLATFORM_WAYLAND
+  printf("Creating Linux Wayland Surface ... ");
+  WaylandState *wayland_state = platform_linux_get_wayland_state(&window);
+
+  VkWaylandSurfaceCreateInfoKHR surface_info = {0};
+  surface_info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+  surface_info.display = wayland_state->display;
+  surface_info.surface = wayland_state->surface;
+
+  if(vkCreateWaylandSurfaceKHR(ctx.instance, &surface_info, NULL, &ctx.surface) != VK_SUCCESS) {
+    printf("vkCreateWaylandSurfaceKHR FAIL\n");
+    return false;
+  }
+#endif
+
+  printf("SUCCESS\n");
+  return true;
+}
+
+b8 create_swapchain() {
+  printf("Creating Swapchain ... ");
+
+  VkSwapchainCreateInfoKHR swapchain_info = {0};
+  swapchain_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+  swapchain_info.surface = ctx.surface;
+  swapchain_info.minImageCount = MAX_FRAMES;
+  swapchain_info.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+  swapchain_info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+  swapchain_info.imageExtent.width = WIDTH;
+  swapchain_info.imageExtent.height = HEIGHT;
+  swapchain_info.imageArrayLayers = 1;
+  swapchain_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  swapchain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  swapchain_info.queueFamilyIndexCount = 1;
+  swapchain_info.pQueueFamilyIndices = &ctx.graphics_queue_index.familyIndex;
+  swapchain_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+  swapchain_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+  swapchain_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+  swapchain_info.clipped = VK_FALSE;
+
+  if(vkCreateSwapchainKHR(ctx.device, &swapchain_info, NULL, &ctx.swapchain) != VK_SUCCESS) {
+    printf("vkCreateSwapchainKHR FAIL\n");
+    return false;
+  }
+
+  if(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain, &ctx.swapchain_image_count, NULL) != VK_SUCCESS) {
+    printf("vkGetSwapchainImagesKHR FAIL 1\n");
+    return false;
+  }
+  ctx.swapchain_images = malloc(sizeof(VkImage) * ctx.swapchain_image_count);
+  if(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain, &ctx.swapchain_image_count, ctx.swapchain_images) != VK_SUCCESS) {
+    printf("vkGetSwapchainImagesKHR FAIL 2\n");
+    return false;
+  }
+
+  printf("SUCCESS\n");
+  return true;
+}
+
+b8 frame() {
+  vkResetCommandBuffer(ctx.command_buffers[0], 0);
+
+  VkCommandBufferBeginInfo begin_info = {0};
+  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+  if(vkBeginCommandBuffer(ctx.command_buffers[0], &begin_info) != VK_SUCCESS) {
+    printf("vkBeginCommandBuffer FAIL\n");
+    return false;
+  }
+
+  if(vkEndCommandBuffer(ctx.command_buffers[0]) != VK_SUCCESS) {
+    printf("vkEndCommandBuffer FAIL\n");
+    return false;
+  }
+
+  VkSubmitInfo submit_info = {0};
+  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = ctx.command_buffers;
+
+  if(vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+    printf("vkQueueSubmit FAIL\n");
+    return false;
+  }
+
+  vkQueueWaitIdle(ctx.graphics_queue);
+  return true;
+}
+
+b8 vk_init() {
   if(!create_instance()) {
-    return;
+    return false;
   }
   if(!setup_debug_messenger()) {
-    return;
+    return false;
   }
   if(!choose_physical_device()) {
-    return;
+    return false;
   }
   if(!create_logical_device()) {
-    return;
+    return false;
   }
   if(!allocate_command_buffers()) {
-    return;
+    return false;
   }
+  if(!create_surface()) {
+    return false;
+  }
+  if(!create_swapchain()) {
+    return false;
+  }
+
+  return true;
 }
 
 void vk_cleanup() {
@@ -251,6 +363,12 @@ void vk_cleanup() {
 }
 
 int main() {
-  vk_init();
+  platform_create_window("My app", 0, 0, 1280, 720, &window);
+  platform_show_window(&window);
+
+  if(vk_init()) {
+    while (frame()) {}
+  }
+
   vk_cleanup();
 }

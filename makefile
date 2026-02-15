@@ -11,6 +11,7 @@ OBJ = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRC))
 C_FLAGS = -g -fPIC -MD -Wvarargs -Wall -Werror -Wno-missing-braces -Werror=vla
 INC_FLAGS = -I$(SRC_DIR) -I/usr/include
 LINK_FLAGS = -lwayland-client -lvulkan -lm
+DEFINES = -DPLATFORM_WAYLAND
 
 all: $(BIN_DIR)/$(APP)
 
@@ -22,7 +23,7 @@ $(BIN_DIR)/$(APP): $(OBJ)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(info $@)
 	mkdir -p $(dir $@)
-	$(CC) $(C_FLAGS) $(INC_FLAGS) -c $< -o $@
+	$(CC) $(C_FLAGS) $(INC_FLAGS) $(DEFINES) -c $< -o $@
 
 run: $(BIN_DIR)/$(APP)
 	./$(BIN_DIR)/$(APP)
