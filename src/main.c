@@ -36,8 +36,18 @@ typedef struct VkContext {
   u32 swapchain_image_count;
   VkImage *swapchain_images;
   VkImageView *swapchain_image_views;
+  u32 image_index;
 
   VkRenderPass render_pass;
+  VkPipelineLayout pipeline_layout;
+  VkPipeline graphics_pipeline;
+  VkFramebuffer *framebuffers; //IMAGE COUNT
+
+  VkSemaphore *image_available_semaphores; // MAX FRAMES
+  VkSemaphore *render_finished_semaphores; // MAX FRAMES
+  VkFence *in_flight_fences; // MAX FRAMES
+  VkFence *images_in_flight; //IMAGE_COUNT
+  u32 current_frame;
 } VkContext;
 
 VkContext ctx = {0};
@@ -370,33 +380,284 @@ b8 create_render_pass() {
   return true;
 }
 
+b8 read_file(const char* filename, char** buffer, u32* length) {
+  FILE* file = fopen(filename, "rb");
+  if (!file) return false;
+
+  fseek(file, 0, SEEK_END);
+  *length = ftell(file);
+  rewind(file);
+
+  *buffer = malloc(*length);
+  size_t read_size = fread(*buffer, 1, *length, file);
+  fclose(file);
+
+  return (read_size == *length);
+}
+
+VkShaderModule create_shader_module(const char* filename) {
+  char* code = NULL;
+  u32 length = 0;
+
+  if (!read_file(filename, &code, &length)) {
+    printf("Falha ao ler shader: %s\n", filename);
+    return VK_NULL_HANDLE;
+  }
+
+  VkShaderModuleCreateInfo create_info = {0};
+  create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  create_info.codeSize = length;
+  create_info.pCode = (u32*)code;
+
+  VkShaderModule module;
+  if (vkCreateShaderModule(ctx.device, &create_info, NULL, &module) != VK_SUCCESS) {
+    printf("Falha ao criar modulo de shader\n");
+    return VK_NULL_HANDLE;
+  }
+
+  free(code);
+  return module;
+}
+
+b8 create_graphics_pipeline() {
+  printf("Creating graphics pipeline ... ");
+
+  VkShaderModule fragment_shader = create_shader_module("shaders/basic.frag.spv");
+  VkShaderModule vertex_shader = create_shader_module("shaders/basic.vert.spv");
+
+  if(fragment_shader == VK_NULL_HANDLE || vertex_shader == VK_NULL_HANDLE) {
+    printf("Creating shader module FAIL\n");
+    return false;
+  }
+
+  VkGraphicsPipelineCreateInfo pipeline_info = {0};
+  pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+  pipeline_info.stageCount = 2;
+
+  VkPipelineShaderStageCreateInfo vertex_info = {0};
+  vertex_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  vertex_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+  vertex_info.module = vertex_shader;
+  vertex_info.pName = "main";
+  VkPipelineShaderStageCreateInfo fragment_info = {0};
+  fragment_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  fragment_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  fragment_info.module = fragment_shader;
+  fragment_info.pName = "main";
+
+  VkPipelineShaderStageCreateInfo stages[] = {fragment_info, vertex_info};
+
+  pipeline_info.pStages = stages;
+
+  VkPipelineVertexInputStateCreateInfo vertex_input = {0};
+  vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+  VkPipelineInputAssemblyStateCreateInfo input_assembly = {0};
+  input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+  input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  input_assembly.primitiveRestartEnable = VK_FALSE;
+
+  VkPipelineViewportStateCreateInfo viewport_state = {0};
+viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+viewport_state.viewportCount = 1;
+viewport_state.scissorCount = 1;
+
+  VkPipelineRasterizationStateCreateInfo rasterization_state = {0};
+  rasterization_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+  rasterization_state.depthClampEnable = VK_FALSE;
+  rasterization_state.rasterizerDiscardEnable = VK_FALSE;
+  rasterization_state.polygonMode = VK_POLYGON_MODE_FILL;
+  rasterization_state.lineWidth = 1.f;
+  rasterization_state.cullMode = VK_CULL_MODE_BACK_BIT;
+  rasterization_state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+  VkPipelineMultisampleStateCreateInfo multisample_info = {0};
+  multisample_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  multisample_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  multisample_info.sampleShadingEnable = VK_FALSE;
+
+  VkPipelineColorBlendStateCreateInfo color_blend = {0};
+  color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+  color_blend.logicOpEnable = VK_FALSE;
+  color_blend.attachmentCount = 1;
+
+  VkPipelineColorBlendAttachmentState color_blend_attachment = {0};
+  color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  color_blend_attachment.blendEnable = VK_TRUE;
+  color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+  color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  color_blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+  color_blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+  color_blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+  color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+  color_blend.pAttachments = &color_blend_attachment;
+
+  VkPipelineDynamicStateCreateInfo dynamic_state = {0};
+  dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamic_state.dynamicStateCount = 2;
+  VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+  dynamic_state.pDynamicStates = dynamic_states;
+
+  VkPipelineLayoutCreateInfo pipeline_layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  if (vkCreatePipelineLayout(ctx.device, &pipeline_layout_info, 0, &ctx.pipeline_layout) != VK_SUCCESS)
+  {
+    printf("vkCreatePipelineLayout FAIL\n");
+    return false;
+  }
+
+  pipeline_info.pVertexInputState = &vertex_input;
+  pipeline_info.pInputAssemblyState = &input_assembly;
+  pipeline_info.pViewportState = &viewport_state;
+  pipeline_info.pRasterizationState = &rasterization_state;
+  pipeline_info.pMultisampleState = &multisample_info;
+  pipeline_info.pColorBlendState = &color_blend;
+  pipeline_info.pDynamicState = &dynamic_state;
+  pipeline_info.layout = ctx.pipeline_layout;
+  pipeline_info.renderPass = ctx.render_pass;
+
+  if(vkCreateGraphicsPipelines(ctx.device, NULL, 1, &pipeline_info, NULL, &ctx.graphics_pipeline) != VK_SUCCESS) {
+    printf("vkCreateGraphicsPipelines FAIL\n");
+    return false;
+  }
+
+  printf("SUCCESS\n");
+  return true;
+}
+
+b8 create_framebuffers() {
+  printf("Creating Framebuffers... ");
+  ctx.framebuffers = malloc(sizeof(VkFramebuffer) * ctx.swapchain_image_count);
+
+  for (u32 i = 0; i < ctx.swapchain_image_count; i++) {
+    VkImageView attachments[] = { ctx.swapchain_image_views[i] };
+
+    VkFramebufferCreateInfo framebuffer_info = {0};
+    framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_info.renderPass = ctx.render_pass;
+    framebuffer_info.attachmentCount = 1;
+    framebuffer_info.pAttachments = attachments;
+    framebuffer_info.width = WIDTH;
+    framebuffer_info.height = HEIGHT;
+    framebuffer_info.layers = 1;
+
+    if (vkCreateFramebuffer(ctx.device, &framebuffer_info, NULL, &ctx.framebuffers[i]) != VK_SUCCESS) {
+      printf("vkCreateFramebuffer FAIL\n");
+      return false;
+    }
+  }
+  printf("SUCCESS\n");
+  return true;
+}
+
+b8 create_sync_objects() {
+  printf("Creating sync objects ... ");
+
+  ctx.image_available_semaphores = malloc(sizeof(VkSemaphore) * MAX_FRAMES);
+  ctx.render_finished_semaphores = malloc(sizeof(VkSemaphore) * MAX_FRAMES);
+  ctx.in_flight_fences = malloc(sizeof(VkFence) * MAX_FRAMES);
+  ctx.images_in_flight = malloc(sizeof(VkFence) * ctx.swapchain_image_count);
+
+  VkSemaphoreCreateInfo semaphore_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  VkFenceCreateInfo fence_info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+  for (u32 i = 0; i < MAX_FRAMES; i++)
+  {
+    if (vkCreateSemaphore(ctx.device, &semaphore_info, NULL, &ctx.image_available_semaphores[i]) != VK_SUCCESS ||
+      vkCreateSemaphore(ctx.device, &semaphore_info, NULL, &ctx.render_finished_semaphores[i]) != VK_SUCCESS ||
+      vkCreateFence(ctx.device, &fence_info, NULL, &ctx.in_flight_fences[i]) != VK_SUCCESS) {
+      printf("FAIL \n");
+      return false;
+    }
+  }
+
+  for (u32 i = 0; i < ctx.swapchain_image_count; i++)
+  {
+    if(vkCreateFence(ctx.device, &fence_info, NULL, &ctx.images_in_flight[i]) != VK_SUCCESS) {
+      printf("FAIL \n");
+      return false;
+    }
+  }
+
+  printf("SUCCESS\n");
+  return true;
+}
+
+b8 record_command_buffer() {
+  VkCommandBufferBeginInfo command_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+
+  vkBeginCommandBuffer(ctx.command_buffers[ctx.current_frame], &command_begin_info);
+
+  VkRenderPassBeginInfo renderpass_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+  renderpass_info.renderPass = ctx.render_pass;
+  renderpass_info.framebuffer = ctx.framebuffers[ctx.image_index];
+  renderpass_info.renderArea.offset = (VkOffset2D){0, 0};
+  renderpass_info.renderArea.extent.width = WIDTH;
+  renderpass_info.renderArea.extent.height = HEIGHT;
+
+  VkClearValue clear_color = {{{0.0f, 0.0f, 0.1f, 1.0f}}};
+  renderpass_info.clearValueCount = 1;
+  renderpass_info.pClearValues = &clear_color;
+
+  vkCmdBeginRenderPass(ctx.command_buffers[ctx.current_frame], &renderpass_info, VK_SUBPASS_CONTENTS_INLINE);
+
+  vkCmdBindPipeline(ctx.command_buffers[ctx.current_frame], VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.graphics_pipeline);
+
+  VkViewport viewport = {0};
+  viewport.x = 0.0f;
+  viewport.y = 0.0f;
+  viewport.width = (f32)WIDTH;
+  viewport.height = (f32)HEIGHT;
+  viewport.minDepth = 0.0f;
+  viewport.maxDepth = 1.0f;
+  vkCmdSetViewport(ctx.command_buffers[ctx.current_frame], 0, 1, &viewport);
+
+  VkRect2D scissor = {0};
+  scissor.offset = (VkOffset2D){0, 0};
+  scissor.extent = (VkExtent2D){WIDTH, HEIGHT};
+  vkCmdSetScissor(ctx.command_buffers[ctx.current_frame], 0, 1, &scissor);
+  vkCmdDraw(ctx.command_buffers[ctx.current_frame], 3, 1, 0, 0);
+
+  vkCmdEndRenderPass(ctx.command_buffers[ctx.current_frame]);
+  vkEndCommandBuffer(ctx.command_buffers[ctx.current_frame]);
+
+  return true;
+}
+
 b8 frame() {
-  vkResetCommandBuffer(ctx.command_buffers[0], 0);
+  vkWaitForFences(ctx.device, 1, &ctx.in_flight_fences[ctx.current_frame], VK_TRUE, 0);
+  vkResetFences(ctx.device, 1, &ctx.in_flight_fences[ctx.current_frame]);
 
-  VkCommandBufferBeginInfo begin_info = {0};
-  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  vkAcquireNextImageKHR(ctx.device, ctx.swapchain, 0, ctx.image_available_semaphores[ctx.current_frame], 0, &ctx.image_index);
 
-  if(vkBeginCommandBuffer(ctx.command_buffers[0], &begin_info) != VK_SUCCESS) {
-    printf("vkBeginCommandBuffer FAIL\n");
-    return false;
-  }
+  vkResetCommandBuffer(ctx.command_buffers[ctx.current_frame], 0);
 
-  if(vkEndCommandBuffer(ctx.command_buffers[0]) != VK_SUCCESS) {
-    printf("vkEndCommandBuffer FAIL\n");
-    return false;
-  }
+  record_command_buffer();
 
   VkSubmitInfo submit_info = {0};
   submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  VkSemaphore wait_semaphores[] = {ctx.image_available_semaphores[ctx.current_frame]};
+  VkSemaphore signal_semaphores[] = {ctx.render_finished_semaphores[ctx.current_frame]};
+  VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+  submit_info.waitSemaphoreCount = 1;
+  submit_info.pWaitSemaphores = wait_semaphores;
+  submit_info.pWaitDstStageMask = wait_stages;
   submit_info.commandBufferCount = 1;
-  submit_info.pCommandBuffers = ctx.command_buffers;
+  submit_info.pCommandBuffers = &ctx.command_buffers[ctx.current_frame];
+  submit_info.signalSemaphoreCount = 1;
+  submit_info.pSignalSemaphores = signal_semaphores;
 
-  if(vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
-    printf("vkQueueSubmit FAIL\n");
-    return false;
-  }
+  vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, ctx.in_flight_fences[ctx.current_frame]);
 
-  vkQueueWaitIdle(ctx.graphics_queue);
+  VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+  present_info.waitSemaphoreCount = 1;
+  present_info.pWaitSemaphores = signal_semaphores;
+  present_info.swapchainCount = 1;
+  present_info.pSwapchains = &ctx.swapchain;
+  present_info.pImageIndices = &ctx.image_index;
+
+  vkQueuePresentKHR(ctx.graphics_queue, &present_info);
+
   return true;
 }
 
@@ -425,6 +686,16 @@ b8 vk_init() {
   if(!create_render_pass()) {
     return false;
   }
+  if(!create_graphics_pipeline()) {
+    return false;
+  }
+  if(!create_framebuffers()) {
+    return false;
+  }
+  if(!create_sync_objects()) {
+    return false;
+  }
+
 
   return true;
 }
@@ -449,7 +720,7 @@ int main() {
   platform_show_window(&window);
 
   if(vk_init()) {
-    while (frame()) {}
+    while (frame()) {platform_process_window_messages(&window);}
   }
 
   vk_cleanup();
