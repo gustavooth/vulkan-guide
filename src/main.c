@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 #include "defines.h"
 #include "platform/platform.h"
+#include "core/events.h"
 
 typedef struct QueueIndex {
   u32 familyIndex;
@@ -15,8 +16,6 @@ typedef struct QueueIndex {
 } QueueIndex;
 
 const u32 MAX_FRAMES = 3;
-const u32 WIDTH = 1280;
-const u32 HEIGHT = 720;
 
 typedef struct VkContext {
   VkInstance instance;
@@ -48,10 +47,17 @@ typedef struct VkContext {
   VkFence *in_flight_fences; // MAX FRAMES
   VkFence *images_in_flight; //IMAGE_COUNT
   u32 current_frame;
+
+  u32 image_width;
+  u32 image_height;
+
+  u32 next_width;
+  u32 next_height;
 } VkContext;
 
 VkContext ctx = {0};
 Window window;
+b8 running = true;
 
 b8 create_instance() {
   printf("Creating instance ... ");
@@ -275,8 +281,8 @@ b8 create_swapchain() {
   swapchain_info.minImageCount = MAX_FRAMES;
   swapchain_info.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
   swapchain_info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-  swapchain_info.imageExtent.width = WIDTH;
-  swapchain_info.imageExtent.height = HEIGHT;
+  swapchain_info.imageExtent.width = ctx.next_width;
+  swapchain_info.imageExtent.height = ctx.next_height;
   swapchain_info.imageArrayLayers = 1;
   swapchain_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   swapchain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -291,6 +297,9 @@ b8 create_swapchain() {
     printf("vkCreateSwapchainKHR FAIL\n");
     return false;
   }
+
+  ctx.image_width = ctx.next_width;
+  ctx.image_height = ctx.next_height;
 
   if(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain, &ctx.swapchain_image_count, NULL) != VK_SUCCESS) {
     printf("vkGetSwapchainImagesKHR FAIL 1\n");
@@ -458,9 +467,9 @@ b8 create_graphics_pipeline() {
   input_assembly.primitiveRestartEnable = VK_FALSE;
 
   VkPipelineViewportStateCreateInfo viewport_state = {0};
-viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-viewport_state.viewportCount = 1;
-viewport_state.scissorCount = 1;
+  viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+  viewport_state.viewportCount = 1;
+  viewport_state.scissorCount = 1;
 
   VkPipelineRasterizationStateCreateInfo rasterization_state = {0};
   rasterization_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -536,8 +545,8 @@ b8 create_framebuffers() {
     framebuffer_info.renderPass = ctx.render_pass;
     framebuffer_info.attachmentCount = 1;
     framebuffer_info.pAttachments = attachments;
-    framebuffer_info.width = WIDTH;
-    framebuffer_info.height = HEIGHT;
+    framebuffer_info.width = ctx.next_width;
+    framebuffer_info.height = ctx.next_height;
     framebuffer_info.layers = 1;
 
     if (vkCreateFramebuffer(ctx.device, &framebuffer_info, NULL, &ctx.framebuffers[i]) != VK_SUCCESS) {
@@ -545,6 +554,7 @@ b8 create_framebuffers() {
       return false;
     }
   }
+
   printf("SUCCESS\n");
   return true;
 }
@@ -592,8 +602,8 @@ b8 record_command_buffer() {
   renderpass_info.renderPass = ctx.render_pass;
   renderpass_info.framebuffer = ctx.framebuffers[ctx.image_index];
   renderpass_info.renderArea.offset = (VkOffset2D){0, 0};
-  renderpass_info.renderArea.extent.width = WIDTH;
-  renderpass_info.renderArea.extent.height = HEIGHT;
+  renderpass_info.renderArea.extent.width = ctx.image_width;
+  renderpass_info.renderArea.extent.height = ctx.image_height;
 
   VkClearValue clear_color = {{{0.0f, 0.0f, 0.1f, 1.0f}}};
   renderpass_info.clearValueCount = 1;
@@ -606,15 +616,15 @@ b8 record_command_buffer() {
   VkViewport viewport = {0};
   viewport.x = 0.0f;
   viewport.y = 0.0f;
-  viewport.width = (f32)WIDTH;
-  viewport.height = (f32)HEIGHT;
+  viewport.width = (f32)ctx.image_width;
+  viewport.height = (f32)ctx.image_height;
   viewport.minDepth = 0.0f;
   viewport.maxDepth = 1.0f;
   vkCmdSetViewport(ctx.command_buffers[ctx.current_frame], 0, 1, &viewport);
 
   VkRect2D scissor = {0};
   scissor.offset = (VkOffset2D){0, 0};
-  scissor.extent = (VkExtent2D){WIDTH, HEIGHT};
+  scissor.extent = (VkExtent2D){ctx.image_width, ctx.image_height};
   vkCmdSetScissor(ctx.command_buffers[ctx.current_frame], 0, 1, &scissor);
   vkCmdDraw(ctx.command_buffers[ctx.current_frame], 3, 1, 0, 0);
 
@@ -624,11 +634,38 @@ b8 record_command_buffer() {
   return true;
 }
 
+void handle_resize() {
+  printf("Resizing ...");
+
+  vkDeviceWaitIdle(ctx.device);
+  vkDestroySwapchainKHR(ctx.device, ctx.swapchain, NULL);
+  for (u32 i = 0; i < ctx.swapchain_image_count; i++)
+  {
+    vkDestroyImageView(ctx.device, ctx.swapchain_image_views[i], NULL);
+    vkDestroyFramebuffer(ctx.device, ctx.framebuffers[i], NULL);
+  }
+
+  create_swapchain();
+  create_framebuffers();
+}
+
 b8 frame() {
-  vkWaitForFences(ctx.device, 1, &ctx.in_flight_fences[ctx.current_frame], VK_TRUE, 0);
+  vkWaitForFences(ctx.device, 1, &ctx.in_flight_fences[ctx.current_frame], VK_TRUE, UINT64_MAX);
   vkResetFences(ctx.device, 1, &ctx.in_flight_fences[ctx.current_frame]);
 
-  vkAcquireNextImageKHR(ctx.device, ctx.swapchain, 0, ctx.image_available_semaphores[ctx.current_frame], 0, &ctx.image_index);
+  if(ctx.next_width != ctx.image_width || ctx.next_height != ctx.image_height) {
+    handle_resize();
+  }
+
+  VkResult result = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX, ctx.image_available_semaphores[ctx.current_frame], 0, &ctx.image_index);
+  if(result == VK_ERROR_OUT_OF_DATE_KHR) {
+    printf("Swapchain out of date! Recriacao necessaria.\n");
+    handle_resize();
+  } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+    printf("Falha ao adquirir imagem! Error code %i\n", result);
+    return false; 
+  }
+  
 
   vkResetCommandBuffer(ctx.command_buffers[ctx.current_frame], 0);
 
@@ -647,7 +684,10 @@ b8 frame() {
   submit_info.signalSemaphoreCount = 1;
   submit_info.pSignalSemaphores = signal_semaphores;
 
-  vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, ctx.in_flight_fences[ctx.current_frame]);
+  if(vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, ctx.in_flight_fences[ctx.current_frame]) != VK_SUCCESS) {
+    printf("Submit fail\n");
+    return false;
+  }
 
   VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   present_info.waitSemaphoreCount = 1;
@@ -656,9 +696,25 @@ b8 frame() {
   present_info.pSwapchains = &ctx.swapchain;
   present_info.pImageIndices = &ctx.image_index;
 
-  vkQueuePresentKHR(ctx.graphics_queue, &present_info);
-
+  if(vkQueuePresentKHR(ctx.graphics_queue, &present_info) != VK_SUCCESS) {
+    printf("Present FAIL\n");
+    return false;
+  }
+  ctx.current_frame = (ctx.current_frame+1) % MAX_FRAMES;
   return true;
+}
+
+b8 resize_event(u16 code, void* sender, EventContext data) {
+  printf("Event code resized received!");
+  ctx.next_width = data.data.u32[0];
+  ctx.next_height = data.data.u32[1];
+
+  return false;
+}
+
+b8 quit_event(u16 code, void* sender, EventContext data) {
+  running = false;
+  return false;
 }
 
 b8 vk_init() {
@@ -701,6 +757,7 @@ b8 vk_init() {
 }
 
 void vk_cleanup() {
+  printf("\nClean\n");
   vkDeviceWaitIdle(ctx.device);
 
   vkDestroySwapchainKHR(ctx.device, ctx.swapchain, NULL);
@@ -716,11 +773,21 @@ void vk_cleanup() {
 }
 
 int main() {
+  event_initialize();
+  event_register(EVENT_CODE_RESIZED, NULL, resize_event);
+  event_register(EVENT_CODE_APPLICATION_QUIT, NULL, quit_event);
   platform_create_window("My app", 0, 0, 1280, 720, &window);
   platform_show_window(&window);
 
+  ctx.next_width = 800;
+  ctx.next_height = 600;
+
   if(vk_init()) {
-    while (frame()) {platform_process_window_messages(&window);}
+    while (running) {
+      platform_process_window_messages(&window);
+      frame();
+      fflush(stdout);
+    }
   }
 
   vk_cleanup();

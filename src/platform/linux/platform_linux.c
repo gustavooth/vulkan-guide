@@ -1,4 +1,5 @@
 #include "defines.h"
+#include "core/events.h"
 
 #ifdef PLATFORM_WAYLAND
 #include "platform_linux.h"
@@ -131,12 +132,17 @@ static void xdg_toplevel_configure (void *data, struct xdg_toplevel *xdg_topleve
 
   if (!width || !height) return;
 	if (width == state->width && height == state->height) return;
+  
+  EventContext ctx;
+  ctx.data.u32[0] = width;
+  ctx.data.u32[1] = height;
 
-  printf("TODO: EVENT_CODE_RESIZED");
+  event_fire(EVENT_CODE_RESIZED, &state, ctx);
 }
 
 void xgd_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel) {
-  printf("TODO: EVENT_CODE_APPLICATION_QUIT");
+  EventContext ctx = {0};
+  event_fire(EVENT_CODE_APPLICATION_QUIT, data, ctx);
 }
 
 void configure_bounds(void *data, struct xdg_toplevel *xdg_toplevel, i32 width, i32 height) {}
